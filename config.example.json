@@ -1,0 +1,58 @@
+{
+  "base_url": "https://token.sensenova.cn/v1",
+  "default_model": "deepseek-v4-flash",
+
+  "strategy": "round_robin",
+  "max_attempts": 8,
+  "timeout": 60,
+  "connect_timeout": 10,
+  "acquire_timeout": 120,
+  "max_total_wait": 120,
+  "retry_backoff": 0.5,
+  "max_retry_backoff": 8,
+
+  "rate_control": {
+    "mode": "adaptive",
+    "qps": 0.3,
+    "min_qps": 0.15,
+    "max_qps": 1.5,
+    "decrease": 0.85,
+    "increase_step": 0.05,
+    "recovery_seconds": 8
+  },
+  "max_connections": 64,
+  "max_keepalive": 16,
+
+  "cooldown": {
+    "base": 3,
+    "factor": 2,
+    "max": 60,
+    "jitter": 0.5,
+    "invalid_ttl": 600,
+    "server_error": 2
+  },
+
+  "accounts": [
+    {
+      "name": "账号1",
+      "api_keys": ["${SENSENOVA_KEY_1}"],
+      "rpm_limit": 30,
+      "max_concurrency": 4,
+      "weight": 1
+    },
+    {
+      "name": "账号2",
+      "api_keys": ["${SENSENOVA_KEY_2}"],
+      "rpm_limit": 30,
+      "max_concurrency": 4,
+      "weight": 1
+    },
+    {
+      "name": "账号3",
+      "api_keys": ["${SENSENOVA_KEY_3}"],
+      "rpm_limit": 30,
+      "max_concurrency": 4,
+      "weight": 1
+    }
+  ]
+}

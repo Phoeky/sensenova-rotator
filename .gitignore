@@ -1,0 +1,31 @@
+# 真实密钥配置 —— 绝对不要提交
+config.json
+config.*.json
+!config.example.json
+
+# 运行产物
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+
+# 无头截图用的临时浏览器配置
+.edgeprof-*/
+
+# 托盘程序的运行产物
+# 注意：gitignore 不支持行尾注释，# 必须在行首，否则整行会被当成 pattern
+.tray-token
+.tray-icons/
+assets/
+
+# 与本机绑定的启动产物（路径写死了绝对路径，换机器要重新生成）
+python-path.txt
+*.lnk
+启动调试.cmd
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
