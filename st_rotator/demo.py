@@ -18,7 +18,9 @@ from typing import Any
 from .config import AccountConfig, Config, CooldownConfig, RateControlConfig
 from .transport import HttpClient, Request, Response
 
-DEMO_MODEL = "SenseNova-V6-Pro"
+# 模拟上游用的占位模型名。这里刻意不写任何真实服务商的模型名——
+# 演示完全离线（走 FakeUpstream），写真实模型名只会让人误以为它可用。
+DEMO_MODEL = "demo-model"
 
 
 @dataclass

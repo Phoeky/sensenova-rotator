@@ -90,7 +90,9 @@ class CooldownConfig:
     """冷却策略参数。
 
     Attributes:
-        base: 首次 429 的冷却秒数。
+        base: 首次 429 的冷却秒数。**应 ≈ 上游的限流恢复窗口**——
+            填小了会让已经撞墙的 Key 在几秒后被反复重试，全是白打的请求
+            （实测商汤的窗口是 60s，用 3s 会把重试放大 3 倍以上）。
         factor: 连续 429 时冷却的指数放大系数。
         max: 单次冷却上限秒数（防止退避到不可用）。
         jitter: 抖动比例，取 [0, jitter] 的随机比例叠加，避免多进程同时苏醒。
@@ -98,8 +100,8 @@ class CooldownConfig:
         server_error: 5xx / 网络超时的短冷却秒数（不归咎于 Key，不累计退避）。
     """
 
-    base: float = 3.0
-    factor: float = 2.0
+    base: float = 60.0
+    factor: float = 1.5
     max: float = 120.0
     jitter: float = 0.5
     invalid_ttl: float = 600.0
@@ -178,7 +180,10 @@ class Config:
     """整体配置。"""
 
     base_url: str = "https://token.sensenova.cn/v1"
-    default_model: str = "SenseNova-V6-Pro"
+    # 必须是上游 /v1/models 里真实存在的模型名。写错会在运行时报 404 model is not found，
+    # 而且因为是流式（已经发过 200），错误只能以 SSE error 事件的形式出现，不好排查。
+    # 以 GET /v1/models 的返回为准，或用控制台切换。
+    default_model: str = "deepseek-v4-flash"
     accounts: list[AccountConfig] = field(default_factory=list)
 
     # 重试与超时
