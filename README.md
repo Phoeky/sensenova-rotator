@@ -8,6 +8,8 @@
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#)
 
+![控制台](docs/console.png)
+
 ---
 
 ## 它解决什么问题
