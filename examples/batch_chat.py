@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sensenova_rotator import Config, RotationExhausted, SenseNovaRotator  # noqa: E402
+from st_rotator import Config, RotationExhausted, StRotator  # noqa: E402
 
 PROMPTS = [
     "用一句话解释什么是幂等性",
@@ -28,7 +28,7 @@ PROMPTS = [
 ]
 
 
-def ask(rotator: SenseNovaRotator, prompt: str) -> tuple[str, str]:
+def ask(rotator: StRotator, prompt: str) -> tuple[str, str]:
     try:
         response = rotator.chat([{"role": "user", "content": prompt}], max_tokens=200)
         return prompt, response["choices"][0]["message"]["content"].strip()
@@ -40,7 +40,7 @@ def main(prompts: list[str]) -> int:
     config = Config.from_file(Path(__file__).resolve().parent.parent / "config.json")
     started = time.perf_counter()
 
-    with SenseNovaRotator(config, logger=lambda m: print("  " + m, file=sys.stderr)) as rotator:
+    with StRotator(config, logger=lambda m: print("  " + m, file=sys.stderr)) as rotator:
         with futures.ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda p: ask(rotator, p), prompts))
 

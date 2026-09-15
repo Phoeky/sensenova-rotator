@@ -68,7 +68,7 @@ def build_logger(
     level: int = logging.INFO,
 ) -> logging.Logger:
     """构造按大小轮转的文件 logger；``log_file`` 为 None 时只建内存 logger。"""
-    logger = logging.getLogger("sensenova_rotator")
+    logger = logging.getLogger("st_rotator")
     logger.setLevel(level)
     logger.propagate = False
     for handler in list(logger.handlers):

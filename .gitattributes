@@ -1,0 +1,11 @@
+# 统一换行符：避免在 Windows 上被编辑器/脚本改写成 CRLF，产生整文件的假 diff
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.ico binary
+*.jpg binary
+
+# Windows 批处理脚本保留 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf

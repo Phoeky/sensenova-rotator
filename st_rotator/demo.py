@@ -23,7 +23,7 @@ DEMO_MODEL = "SenseNova-V6-Pro"
 
 @dataclass
 class FakeUpstream:
-    """可配置的假商汤网关。"""
+    """可配置的假上游网关。"""
 
     invalid_keys: set[str] = field(default_factory=set)        # 返回 401
     always_limited: set[str] = field(default_factory=set)      # 持续 429
@@ -130,7 +130,7 @@ def demo_upstream() -> FakeUpstream:
 
 def build_demo_rotator(**kwargs: Any):
     """构造一个完全离线、跑在模拟上游上的 rotator。"""
-    from .client import SenseNovaRotator
+    from .client import StRotator
 
     upstream = demo_upstream()
     config = demo_config()
@@ -140,5 +140,5 @@ def build_demo_rotator(**kwargs: Any):
         connect_timeout=config.connect_timeout,
         handler=upstream.handle,
     )
-    rotator = SenseNovaRotator(config, client=client, **kwargs)
+    rotator = StRotator(config, client=client, **kwargs)
     return rotator, upstream

@@ -20,7 +20,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>商汤日日新 · 多 Key 轮换控制台</title>
+<title>多 Key 轮换控制台</title>
 <style>
   :root {
     --bg: #f4f6fa;
@@ -207,7 +207,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <header>
     <div>
-      <h1>商汤日日新 · 多 Key 轮换控制台</h1>
+      <h1>多 Key 轮换控制台</h1>
       <div class="sub" id="subline">正在连接…</div>
     </div>
     <div class="spacer"></div>

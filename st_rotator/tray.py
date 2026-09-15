@@ -89,7 +89,7 @@ _TRAY_CALLBACK_MESSAGE = WM_APP + 1
 _TIMER_ID = 0x5E01
 _REFRESH_MS = 2000
 #: 单实例互斥体名
-MUTEX_NAME = "Local\\SensenovaRotatorTray"
+MUTEX_NAME = "Local\\StRotatorTray"
 
 # 菜单项 ID
 _ID_OPEN = 1001
@@ -355,7 +355,7 @@ class TrayApp:
             bits.append(f"{rate:.2f} req/s")
         if paused:
             bits.append("已暂停")
-        return state, "商汤轮换网关 · " + " · ".join(bits)
+        return state, "Key 轮换网关 · " + " · ".join(bits)
 
     # ------------------------------------------------------------ 图标
 
@@ -594,7 +594,7 @@ class TrayApp:
         # 类名必须**每个实例都不同**：同一个类名第二次注册时，如果 WNDPROC 不是同一个
         # 函数指针，Windows 会拒绝（ERROR_CLASS_ALREADY_EXISTS）。用固定名字的话，
         # 同一进程里第二次创建托盘窗口就会直接失败。
-        class_name = f"SensenovaRotatorTray_{os.getpid()}_{id(self):x}"
+        class_name = f"StRotatorTray_{os.getpid()}_{id(self):x}"
         self._class_name = class_name
         self._hinst = hinst
 
@@ -606,7 +606,7 @@ class TrayApp:
             raise OSError("RegisterClassW 失败，无法创建托盘窗口")
 
         hwnd = user32.CreateWindowExW(
-            0, class_name, "sensenova-rotator tray", 0, 0, 0, 0, 0,
+            0, class_name, "st-rotator tray", 0, 0, 0, 0, 0,
             wintypes.HWND(HWND_MESSAGE), None, hinst, None,
         )
         if not hwnd:
@@ -647,7 +647,7 @@ def run_tray(**kwargs) -> None:
 
 
 def _self_test() -> int:  # pragma: no cover - 手工验证用
-    """``python -m sensenova_rotator.tray`` 手动看一眼托盘图标。"""
+    """``python -m st_rotator.tray`` 手动看一眼托盘图标。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="托盘程序自检")

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .client import SenseNovaRotator
+from .client import StRotator
 from .config import STRATEGIES, Config, ConfigStore, RateControlConfig
 from .dashboard import DASHBOARD_HTML
 from .errors import ConfigError, RotatorError
@@ -79,7 +79,7 @@ def parse_key_list(raw: str) -> list[str]:
 class GatewayMetrics:
     """网关侧计数。线程安全，读多写少。
 
-    只统计"客户端视角"的量。上游尝试次数由 ``SenseNovaRotator`` 自己维护——
+    只统计"客户端视角"的量。上游尝试次数由 ``StRotator`` 自己维护——
     因为重试发生在客户端内部，网关层看不到轮换了几次。
     """
 
@@ -172,7 +172,7 @@ class ConsoleState:
     """
 
     store: ConfigStore
-    rotator: SenseNovaRotator
+    rotator: StRotator
     host: str = "127.0.0.1"
     port: int = 8080
     token: str | None = None
@@ -577,7 +577,7 @@ def default_profile_dir() -> Path:
     一个独立应用；二是 localStorage（存的访问 Token）能跨次启动保留。
     """
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return Path(base) / "sensenova-rotator" / "console-profile"
+    return Path(base) / "st-rotator" / "console-profile"
 
 
 def open_console_window(

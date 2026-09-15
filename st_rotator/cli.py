@@ -1,12 +1,12 @@
 """命令行入口。
 
-    python -m sensenova_rotator ui                          # 图形控制台（推荐）
-    python -m sensenova_rotator demo                        # 离线演示，不需要真实 Key
-    python -m sensenova_rotator check -c config.json        # 逐把 Key 体检
-    python -m sensenova_rotator status -c config.json       # 看当前池状态
-    python -m sensenova_rotator chat  -c config.json "你好"
-    python -m sensenova_rotator serve -c config.json        # 只起网关，无界面
-    python -m sensenova_rotator bench -c config.json -n 200 -p 16
+    python -m st_rotator ui                          # 图形控制台（推荐）
+    python -m st_rotator demo                        # 离线演示，不需要真实 Key
+    python -m st_rotator check -c config.json        # 逐把 Key 体检
+    python -m st_rotator status -c config.json       # 看当前池状态
+    python -m st_rotator chat  -c config.json "你好"
+    python -m st_rotator serve -c config.json        # 只起网关，无界面
+    python -m st_rotator bench -c config.json -n 200 -p 16
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from .client import SenseNovaRotator
+from .client import StRotator
 from .config import Config, ConfigStore, RateControlConfig
 from .errors import ApiError, NoAvailableKey, RotationExhausted, RotatorError, StreamInterrupted
 from .keypool import mask_key
@@ -46,7 +46,7 @@ def _print_table(rows: Sequence[dict[str, Any]], columns: Sequence[tuple[str, st
         print("  ".join(str(row.get(field, ""))[:w].ljust(w) for (field, _), w in zip(columns, widths)))
 
 
-def _print_pool(rotator: SenseNovaRotator, title: str = "Key 池状态") -> None:
+def _print_pool(rotator: StRotator, title: str = "Key 池状态") -> None:
     data = rotator.status()
     summary = data["summary"]
     print(f"\n=== {title} ===")
@@ -144,7 +144,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         + (f" (qps={rc.qps})" if rc.mode != "off" else "")
         + f" | 单请求预算: {config.max_total_wait or '不限'}s | 最大重试: {config.max_attempts}"
     )
-    rotator = SenseNovaRotator(config)
+    rotator = StRotator(config)
     try:
         _print_pool(rotator, "Key 池状态（尚未发过请求）")
         print("\n提示: status 只反映本地池状态，要验证凭据是否有效请用 check。")
@@ -156,7 +156,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     """逐把 Key 单独体检，确认哪些是好的、哪些要换掉。"""
     config = Config.from_file(args.config)
-    rotator = SenseNovaRotator(config)
+    rotator = StRotator(config)
     rows = []
     try:
         for key in rotator.pool.keys:
@@ -179,7 +179,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_chat(args: argparse.Namespace) -> int:
     config = Config.from_file(args.config)
-    with SenseNovaRotator(config, logger=lambda m: print("  " + m, file=sys.stderr)) as rotator:
+    with StRotator(config, logger=lambda m: print("  " + m, file=sys.stderr)) as rotator:
         messages = [{"role": "user", "content": args.prompt}]
         if args.stream:
             for piece in rotator.chat_stream(messages, model=args.model):
@@ -194,7 +194,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
 
 
 def _run_bench(
-    rotator: SenseNovaRotator,
+    rotator: StRotator,
     total: int,
     parallel: int,
     *,
@@ -303,7 +303,7 @@ def _build_runtime(
     if getattr(args, "verbose", False):
         echo = lambda message: print("  " + message, file=sys.stderr)  # noqa: E731
     sink = make_log_sink(logger, buffer, echo)
-    rotator = SenseNovaRotator(config, logger=sink)
+    rotator = StRotator(config, logger=sink)
     return store, config, sink, rotator, buffer
 
 
@@ -516,7 +516,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
            f" ({rc.qps} req/s)" if rc.mode == "fixed" else " (关闭)")
         + f" | 单请求预算: {config.max_total_wait or '不限'}s | 最大重试: {config.max_attempts}"
     )
-    with SenseNovaRotator(config, logger=(lambda m: print("  " + m, file=sys.stderr)) if args.verbose else None) as rotator:
+    with StRotator(config, logger=(lambda m: print("  " + m, file=sys.stderr)) if args.verbose else None) as rotator:
         print(f"开始压测: {args.requests} 请求 / {args.parallel} 并发…")
         max_tokens = args.max_tokens or None
         stats = _run_bench(rotator, args.requests, args.parallel, max_tokens=max_tokens)
@@ -530,8 +530,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sensenova-rotator",
-        description="商汤日日新多账户多 Key 轮换工具（429 自愈）",
+        prog="st-rotator",
+        description="多账户多 Key 轮换工具（限流自愈，面向 OpenAI 兼容端点）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -664,8 +664,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # 少了这一段，`python -m sensenova_rotator.cli ...` 会静默什么都不做：
+    # 少了这一段，`python -m st_rotator.cli ...` 会静默什么都不做：
     # 模块被导入但不执行 main()，退出码 0、无任何输出，排查起来非常费劲。
-    # 文档推荐用 `python -m sensenova_rotator ...`（走 __main__.py），
+    # 文档推荐用 `python -m st_rotator ...`（走 __main__.py），
     # 这里补上是为了让两种写法行为一致。
     raise SystemExit(main())

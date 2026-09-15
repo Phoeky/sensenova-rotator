@@ -1,22 +1,24 @@
-"""商汤日日新（SenseNova）多账户多 Key 轮换工具包。
+"""多账户多 Key 轮换 + 限流自愈工具包（面向 OpenAI 兼容端点）。
 
 零第三方依赖，只用 Python 标准库。
 
+与任何服务商均无关联。请仅使用你本人有权使用的凭据，并自行遵守所用服务的条款。
+
 快速开始::
 
-    from sensenova_rotator import Config, SenseNovaRotator
+    from st_rotator import Config, StRotator
 
     config = Config.from_file("config.json")
-    with SenseNovaRotator(config) as rotator:
+    with StRotator(config) as rotator:
         resp = rotator.chat([{"role": "user", "content": "你好"}])
         print(resp["choices"][0]["message"]["content"])
 
 需要图形界面就用命令行入口::
 
-    python -m sensenova_rotator ui
+    python -m st_rotator ui
 """
 
-from .client import SenseNovaRotator, classify, extract_error, parse_retry_after
+from .client import StRotator, classify, extract_error, parse_retry_after
 from .config import AccountConfig, Config, ConfigStore, CooldownConfig, RateControlConfig
 from .errors import (
     AllKeysInvalid,
@@ -59,7 +61,7 @@ __all__ = [
     "Response",
     "RotationExhausted",
     "RotatorError",
-    "SenseNovaRotator",
+    "StRotator",
     "StreamInterrupted",
     "StreamResponse",
     "UiResponse",

@@ -1,4 +1,4 @@
-"""轮换客户端：在 Key 池之上封装商汤日日新（OpenAI 兼容）HTTP 调用。
+"""轮换客户端：在 Key 池之上封装 OpenAI 兼容 HTTP 调用。
 
 关键设计
 --------
@@ -163,12 +163,12 @@ def _parse_model_list(payload: Any) -> list[dict[str, Any]]:
     return models
 
 
-class SenseNovaRotator:
-    """带多 Key 轮换与 429 自愈的商汤日日新客户端。
+class StRotator:
+    """带多 Key 轮换与限流自愈的 OpenAI 兼容客户端。
 
     用法::
 
-        rotator = SenseNovaRotator(Config.from_file("config.json"))
+        rotator = StRotator(Config.from_file("config.json"))
         resp = rotator.chat([{"role": "user", "content": "你好"}])
         print(resp["choices"][0]["message"]["content"])
     """
@@ -199,7 +199,7 @@ class SenseNovaRotator:
             connect_timeout=config.connect_timeout,
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "sensenova-rotator/1.0",
+                "User-Agent": "st-rotator/1.0",
                 **config.extra_headers,
             },
             max_connections=config.max_connections,
@@ -244,7 +244,7 @@ class SenseNovaRotator:
         if self._owns_client:
             self._client.close()
 
-    def __enter__(self) -> "SenseNovaRotator":
+    def __enter__(self) -> "StRotator":
         return self
 
     def __exit__(self, *exc_info: object) -> None:

@@ -1,10 +1,10 @@
-"""创建「商汤轮换网关」快捷方式。
+"""创建「Key 轮换网关」快捷方式。
 
 目标：让用户**双击就能启动**托盘程序，不用记命令行，也不会闪出黑色控制台窗口。
 
 做法是生成一个指向 ``pythonw.exe`` 的 ``.lnk``（Windows 原生快捷方式）::
 
-    pythonw.exe -m sensenova_rotator tray -c config.json
+    pythonw.exe -m st_rotator tray -c config.json
 
 **为什么不包一层 .bat / .vbs**
 
@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-SHORTCUT_NAME = "商汤轮换网关"
+SHORTCUT_NAME = "Key 轮换网关"
 DEFAULT_PORT = 8899
 
 
@@ -70,7 +70,7 @@ $sc.TargetPath = "{target}"
 $sc.Arguments = "{arguments}"
 $sc.WorkingDirectory = "{ROOT}"
 $sc.IconLocation = "{icon},0"
-$sc.Description = "{SHORTCUT_NAME} - 商汤日日新多 Key 轮换网关（系统托盘常驻）"
+$sc.Description = "{SHORTCUT_NAME} - 多 Key 轮换网关（系统托盘常驻）"
 $sc.Save()
 Write-Output "OK"
 '''
@@ -97,7 +97,7 @@ def ensure_app_icon() -> Path:
         return icon
     try:
         sys.path.insert(0, str(ROOT))
-        from sensenova_rotator.trayicons import (  # noqa: PLC0415
+        from st_rotator.trayicons import (  # noqa: PLC0415
             COLOR_HEALTHY,
             ICON_SIZES,
             build_ico,
@@ -123,7 +123,7 @@ def desktop_dir() -> Path | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="创建商汤轮换网关的快捷启动入口")
+    parser = argparse.ArgumentParser(description="创建Key 轮换网关的快捷启动入口")
     parser.add_argument("--desktop", action="store_true", help="同时在桌面创建一个")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"网关端口（默认 {DEFAULT_PORT}）")
     parser.add_argument("--token", default=None, help="本地口令；不传则由托盘自动生成并复用")
@@ -142,7 +142,7 @@ def main() -> int:
     pythonw = find_pythonw()
     icon = ensure_app_icon()
 
-    arguments = f'-m sensenova_rotator tray -c config.json --port {args.port}'
+    arguments = f'-m st_rotator tray -c config.json --port {args.port}'
     if args.token:
         arguments += f" --token {args.token}"
 

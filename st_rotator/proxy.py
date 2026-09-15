@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
-from .client import SenseNovaRotator
+from .client import StRotator
 from .errors import AllKeysInvalid, ApiError, NoAvailableKey, RotationExhausted, RotatorError
 from . import ui
 
@@ -68,11 +68,11 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
     """把请求转交给轮换池的 HTTP 处理器。"""
 
     protocol_version = "HTTP/1.1"
-    server_version = "sensenova-rotator-proxy"
+    server_version = "st-rotator-proxy"
     sys_version = ""
 
     # 由 create_server 注入
-    rotator: SenseNovaRotator
+    rotator: StRotator
     token: str | None = None
     verbose: bool = False
     log_sink: Callable[[str], None] | None = None
@@ -367,7 +367,7 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
 
 
 def create_server(
-    rotator: SenseNovaRotator,
+    rotator: StRotator,
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
@@ -397,7 +397,7 @@ def create_server(
 
 
 def serve(
-    rotator: SenseNovaRotator,
+    rotator: StRotator,
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
