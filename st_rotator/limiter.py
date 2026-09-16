@@ -16,23 +16,25 @@ from typing import Callable
 
 
 class RateLimiter:
-    """匀速放行器：任意相邻两次放行间隔 >= 1/rate 秒。
+    """匀速/突发放行器：支持突发容量（burst）与预订回滚（refund）。
 
-    采用"预订下一个时间片"的实现，多线程下不会出现惊群或超发。
+    采用令牌桶/时间片算法，多线程下不会出现惊群或超发。
 
     ``rate <= 0`` 表示不限速。
     """
 
-    __slots__ = ("rate", "_interval", "_lock", "_next", "_clock", "_sleeper")
+    __slots__ = ("rate", "_burst", "_interval", "_lock", "_next", "_clock", "_sleeper")
 
     def __init__(
         self,
         rate: float,
         *,
+        burst: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.rate = float(rate)
+        self._burst = max(1.0, float(burst))
         self._interval = 1.0 / self.rate if self.rate > 0 else 0.0
         self._lock = threading.Lock()
         self._next = 0.0
@@ -43,17 +45,36 @@ class RateLimiter:
     def enabled(self) -> bool:
         return self._interval > 0
 
-    def acquire(self) -> float:
-        """阻塞到可以发请求为止，返回实际等待的秒数。"""
+    def acquire(self, timeout: float | None = None) -> float:
+        """阻塞到可以发请求为止，返回实际等待的秒数。
+
+        Args:
+            timeout: 最长等待秒数。若所需等待时间 > timeout，则不预订时间片直接抛出 TimeoutError。
+        """
         if self._interval <= 0:
             return 0.0
         with self._lock:
             now = self._clock()
-            wait = max(0.0, self._next - now)
-            self._next = max(now, self._next) + self._interval
+            burst_window = (self._burst - 1.0) * self._interval
+            earliest = now - burst_window
+            base = max(earliest, self._next)
+            wait = max(0.0, base - now)
+            if timeout is not None and wait > timeout:
+                raise TimeoutError(f"限速等待超时（需等 {wait:.2f}s，预算 {timeout:.2f}s）")
+            self._next = base + self._interval
         if wait > 0:
             self._sleeper(wait)
         return wait
+
+    def refund(self) -> None:
+        """若请求在真正发出前中止，回滚一次放行时间片，避免队列漂移。"""
+        if self._interval <= 0:
+            return
+        with self._lock:
+            now = self._clock()
+            burst_window = (self._burst - 1.0) * self._interval
+            earliest = now - burst_window
+            self._next = max(earliest, self._next - self._interval)
 
     # 固定限速器没有反馈回路，提供空实现让调用方可以统一调用
     def on_success(self) -> None:
@@ -63,7 +84,7 @@ class RateLimiter:
         """记录一次 429（固定限速器不需要）。"""
 
     def stats(self) -> dict[str, float | int | str]:
-        return {"mode": "fixed", "rate": round(self.rate, 3)}
+        return {"mode": "fixed", "rate": round(self.rate, 3), "burst": self._burst}
 
 
 class AdaptiveRateLimiter:
@@ -97,6 +118,7 @@ class AdaptiveRateLimiter:
         self,
         rate: float,
         *,
+        burst: float = 1.0,
         min_rate: float = 0.15,
         max_rate: float = 5.0,
         decrease: float = 0.85,
@@ -108,6 +130,7 @@ class AdaptiveRateLimiter:
         self._min = max(float(min_rate), 1e-6)
         self._max = max(float(max_rate), self._min)
         self._rate = min(max(float(rate), self._min), self._max)
+        self._burst = max(1.0, float(burst))
         self._decrease = min(max(float(decrease), 0.1), 0.99)
         self._increase_step = max(float(increase_step), 0.0)
         self._recovery = max(float(recovery_seconds), 0.0)
@@ -135,16 +158,34 @@ class AdaptiveRateLimiter:
 
     # ------------------------------------------------------------ 放行
 
-    def acquire(self) -> float:
-        """按当前速率阻塞放行，返回实际等待的秒数。"""
+    def acquire(self, timeout: float | None = None) -> float:
+        """按当前速率阻塞放行，返回实际等待的秒数。
+
+        Args:
+            timeout: 最长等待秒数。若所需等待时间 > timeout，则不预订时间片直接抛出 TimeoutError。
+        """
         with self._lock:
             interval = 1.0 / self._rate
             now = self._clock()
-            wait = max(0.0, self._next - now)
-            self._next = max(now, self._next) + interval
+            burst_window = (self._burst - 1.0) * interval
+            earliest = now - burst_window
+            base = max(earliest, self._next)
+            wait = max(0.0, base - now)
+            if timeout is not None and wait > timeout:
+                raise TimeoutError(f"自适应限速等待超时（需等 {wait:.2f}s，预算 {timeout:.2f}s）")
+            self._next = base + interval
         if wait > 0:
             self._sleeper(wait)
         return wait
+
+    def refund(self) -> None:
+        """回滚一次放行时间片，避免未发出的请求导致队列漂移。"""
+        with self._lock:
+            interval = 1.0 / self._rate
+            now = self._clock()
+            burst_window = (self._burst - 1.0) * interval
+            earliest = now - burst_window
+            self._next = max(earliest, self._next - interval)
 
     # ------------------------------------------------------------ 反馈回路
 
@@ -187,6 +228,7 @@ class AdaptiveRateLimiter:
             return {
                 "mode": "adaptive",
                 "rate": round(self._rate, 3),
+                "burst": self._burst,
                 "min_rate": self._min,
                 "max_rate": self._max,
                 "successes": self._successes,

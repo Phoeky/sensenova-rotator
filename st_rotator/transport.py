@@ -83,6 +83,8 @@ class StreamResponse:
         self._conn = conn
         self._buffer: bytes | None = None
         self._done = False
+        self._consumed_eof = False
+        self._healthy = True
 
     # ------------------------------------------------------------ 读取
 
@@ -91,8 +93,12 @@ class StreamResponse:
             while True:
                 line = self._raw.readline()
                 if not line:
+                    self._consumed_eof = True
                     break
                 yield line.decode("utf-8", "replace").rstrip("\r\n")
+        except Exception:
+            self._healthy = False
+            raise
         finally:
             self.close()
 
@@ -100,8 +106,12 @@ class StreamResponse:
     def text(self) -> str:
         """把剩余内容一次性读完（仅用于读取错误响应体）。"""
         if self._buffer is None:
-            with contextlib.suppress(Exception):
+            try:
                 self._buffer = self._raw.read()
+                self._consumed_eof = True
+            except Exception:
+                self._healthy = False
+                self._buffer = b""
             self._buffer = self._buffer or b""
         self.close()
         return self._buffer.decode("utf-8", "replace")
@@ -115,7 +125,13 @@ class StreamResponse:
         self._done = True
         with contextlib.suppress(Exception):
             self._raw.close()
-        self._client._finish(self._conn)
+        reusable = (
+            self._healthy
+            and self._consumed_eof
+            and self.status < 500
+            and self.headers.get("connection", "").lower() != "close"
+        )
+        self._client._finish(self._conn, healthy=reusable)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<StreamResponse {self.status}>"

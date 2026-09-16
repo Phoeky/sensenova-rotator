@@ -155,6 +155,27 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
+    def _forwardable_headers(self) -> dict[str, str]:
+        """提取需要透传给上游的请求头（追踪 ID、租户、组织、自定义 x- 头等）。"""
+        forward_headers: dict[str, str] = {}
+        allowed_specific = {
+            "x-request-id",
+            "x-correlation-id",
+            "traceparent",
+            "tracestate",
+            "openai-organization",
+            "openai-project",
+            "openai-beta",
+        }
+        for key, val in self.headers.items():
+            k_lower = key.lower()
+            if k_lower in allowed_specific or (
+                k_lower.startswith("x-")
+                and k_lower not in ("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host")
+            ):
+                forward_headers[key] = val
+        return forward_headers
+
     # ------------------------------------------------------------ 控制台
 
     @property
@@ -229,11 +250,12 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
         if self._paused:
             self._send_json(503, error_payload("gateway paused from console", "service_unavailable", "503"))
             return
+        query_suffix = f"?{parsed.query}" if parsed.query else ""
         if path == MODELS_PATH:
-            self._forward_simple("GET", "models")
+            self._forward_simple("GET", f"models{query_suffix}")
             return
         if path.startswith("/v1/"):
-            self._forward_simple("GET", path[4:])
+            self._forward_simple("GET", f"{path[4:]}{query_suffix}")
             return
         self._send_json(404, error_payload(f"unknown path {path}", "invalid_request_error"))
 
@@ -258,11 +280,12 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
             self._dispatch_console("POST", path, body=body if isinstance(body, dict) else {})
             return
 
+        query_suffix = f"?{parsed.query}" if parsed.query else ""
         if path == CHAT_PATH:
             self._handle_chat(raw)
             return
         if path.startswith("/v1/"):
-            self._forward_simple("POST", path[4:], raw)
+            self._forward_simple("POST", f"{path[4:]}{query_suffix}", raw)
             return
         self._send_json(404, error_payload(f"unknown path {path}", "invalid_request_error"))
 
@@ -292,14 +315,17 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
         if self.console is not None:
             self.console.metrics.note_request(stream=stream)
 
+        headers = self._forwardable_headers()
         if stream:
-            self._chat_stream(messages, model, params)
+            self._chat_stream(messages, model, params, headers=headers)
         else:
-            self._chat_complete(messages, model, params)
+            self._chat_complete(messages, model, params, headers=headers)
 
-    def _chat_complete(self, messages: Any, model: str | None, params: dict) -> None:
+    def _chat_complete(
+        self, messages: Any, model: str | None, params: dict, headers: Mapping[str, str] | None = None
+    ) -> None:
         try:
-            result = self.rotator.chat(messages, model=model, **params)
+            result = self.rotator.chat(messages, model=model, headers=headers, **params)
         except ApiError as exc:
             self._send_json(exc.status, _passthrough_error(exc.status, exc.body))
             return
@@ -319,10 +345,45 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
             return
         self._send_json(200, result)
 
-    def _chat_stream(self, messages: Any, model: str | None, params: dict) -> None:
+    def _chat_stream(
+        self, messages: Any, model: str | None, params: dict, headers: Mapping[str, str] | None = None
+    ) -> None:
+        stream = self.rotator.chat_stream_raw(messages, model=model, headers=headers, **params)
+        first_chunk = None
+        has_first = False
+        try:
+            first_chunk = next(stream)
+            has_first = True
+        except StopIteration:
+            self._begin_stream()
+            try:
+                self._write_chunk(b"data: [DONE]\n\n")
+                self._end_stream()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
+        except ApiError as exc:
+            self._send_json(exc.status, _passthrough_error(exc.status, exc.body))
+            return
+        except RotationExhausted as exc:
+            status = exc.last_status if (exc.last_status or 0) >= 400 else 502
+            self._send_json(status, error_payload(str(exc), "upstream_exhausted", str(status)))
+            return
+        except NoAvailableKey as exc:
+            self._send_json(429, error_payload(str(exc), "rate_limit_exceeded", "429"), retry_after=exc.retry_after)
+            return
+        except AllKeysInvalid as exc:
+            self._send_json(503, error_payload(str(exc), "all_keys_invalid", "503"))
+            return
+        except RotatorError as exc:
+            self._send_json(502, error_payload(str(exc), "upstream_error", "502"))
+            return
+
         self._begin_stream()
         try:
-            for chunk in self.rotator.chat_stream_raw(messages, model=model, **params):
+            if has_first:
+                self._write_chunk(self._sse(first_chunk))
+            for chunk in stream:
                 self._write_chunk(self._sse(chunk))
         except RotatorError as exc:
             # 已经发出 200 了，改不了状态码，只能补一条 error 事件收尾
@@ -351,14 +412,21 @@ class RotatorProxyHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError as exc:
                 self._send_json(400, error_payload(f"invalid JSON body: {exc}", "invalid_request_error"))
                 return
+        headers = self._forwardable_headers()
         try:
-            result = self.rotator.request(upstream_path, method=method, json_body=body)
+            result = self.rotator.request(upstream_path, method=method, json_body=body, headers=headers)
         except ApiError as exc:
             self._send_json(exc.status, _passthrough_error(exc.status, exc.body))
             return
         except RotationExhausted as exc:
             status = exc.last_status if (exc.last_status or 0) >= 400 else 502
             self._send_json(status, error_payload(str(exc), "upstream_exhausted", str(status)))
+            return
+        except NoAvailableKey as exc:
+            self._send_json(429, error_payload(str(exc), "rate_limit_exceeded", "429"), retry_after=exc.retry_after)
+            return
+        except AllKeysInvalid as exc:
+            self._send_json(503, error_payload(str(exc), "all_keys_invalid", "503"))
             return
         except RotatorError as exc:
             self._send_json(502, error_payload(str(exc), "upstream_error", "502"))

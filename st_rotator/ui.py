@@ -243,6 +243,7 @@ class ConsoleState:
         *,
         account: str | None = None,
         max_concurrency: int = 4,
+        rpm_limit: int | None = None,
         verify: bool = True,
     ) -> UiResponse:
         """批量加 Key：先体检，再把好 Key 同时写进内存池和配置文件。
@@ -278,20 +279,25 @@ class ConsoleState:
                     warnings.append(f"{_mask(key)} 暂时无法确认（{detail}），已按可用处理")
 
             with self.lock:
+                target_account = account
+                if not target_account:
+                    target_account = f"账号{len(self.store._accounts_raw()) + 1}"
                 try:
-                    self.store.add_key(key, account, max_concurrency=max_concurrency)
+                    self.store.add_key(key, target_account, max_concurrency=max_concurrency, rpm_limit=rpm_limit)
                 except ConfigError as exc:
                     rejected.append({"key": _mask(key), "reason": str(exc)})
                     continue
                 try:
                     item = self.rotator.add_key(
-                        key, account=account, max_concurrency=max_concurrency
+                        key, account=target_account, max_concurrency=max_concurrency, rpm_limit=rpm_limit
                     )
                 except ConfigError as exc:
                     # 内存池拒绝 → 回滚刚才写进 store 的那一条，保持两边一致
                     self.store.remove_key(key)
                     rejected.append({"key": _mask(key), "reason": str(exc)})
                     continue
+                self.store.reload()
+                self.rotator.config.accounts = list(self.store.config.accounts)
             added.append({"id": item.key_id, "key": item.masked, "account": item.account})
 
         if added:
@@ -335,6 +341,8 @@ class ConsoleState:
         with self.lock:
             removed = self.rotator.remove_key(plain)
             self.store.remove_key(plain)
+            self.store.reload()
+            self.rotator.config.accounts = list(self.store.config.accounts)
         if not removed:
             return UiResponse.error("删除失败：Key 已不在池中", status=409)
         self._save_and_log(f"通过控制台删除 Key：{label}")
@@ -489,10 +497,18 @@ class ConsoleState:
             if method == "POST":
                 payload = dict(body or {})
                 if path == "/api/keys/add":
+                    rpm_limit_raw = payload.get("rpm_limit")
+                    rpm_limit: int | None = None
+                    if rpm_limit_raw is not None and str(rpm_limit_raw).strip() != "":
+                        try:
+                            rpm_limit = _clamp_int(rpm_limit_raw, 30, 1, 10000)
+                        except Exception:
+                            rpm_limit = None
                     return self.add_keys(
                         str(payload.get("keys") or payload.get("key") or ""),
                         account=(str(payload.get("account")).strip() or None) if payload.get("account") else None,
                         max_concurrency=_clamp_int(payload.get("max_concurrency"), 4, 1, 64),
+                        rpm_limit=rpm_limit,
                     )
                 if path == "/api/keys/verify":
                     return self.verify_one(str(payload.get("id") or payload.get("key") or ""))

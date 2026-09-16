@@ -90,13 +90,63 @@ class KeyStats:
         }
 
 
+class AccountState:
+    """账号的运行时状态，聚合该账号下所有 Key 的配额与冷却联动。"""
+
+    __slots__ = (
+        "name", "rpm_limit", "max_concurrency", "weight",
+        "inflight", "cooldown_until", "consecutive_failures",
+        "last_error", "_window",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        rpm_limit: int | None = None,
+        max_concurrency: int = 4,
+        weight: float = 1.0,
+    ) -> None:
+        self.name = name
+        self.rpm_limit = rpm_limit
+        self.max_concurrency = max_concurrency
+        self.weight = weight
+        self.inflight = 0
+        self.cooldown_until = 0.0
+        self.consecutive_failures = 0
+        self.last_error = ""
+        self._window: deque[float] = deque()
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - 60.0
+        window = self._window
+        while window and window[0] < cutoff:
+            window.popleft()
+
+    def rpm_blocked_until(self, now: float) -> float:
+        if not self.rpm_limit:
+            return 0.0
+        self._prune(now)
+        if len(self._window) < self.rpm_limit:
+            return 0.0
+        return self._window[len(self._window) - self.rpm_limit] + 60.0
+
+    def available_at(self, now: float) -> float:
+        return max(self.cooldown_until, self.rpm_blocked_until(now))
+
+    def is_usable(self, now: float) -> bool:
+        if self.inflight >= self.max_concurrency:
+            return False
+        return self.available_at(now) <= now
+
+
 class ApiKey:
     """一把 Key 的运行时状态。"""
 
     __slots__ = (
         "key", "account", "rpm_limit", "max_concurrency", "weight", "tags",
         "status", "cooldown_until", "consecutive_failures", "inflight",
-        "last_used", "last_error", "stats", "_window",
+        "last_used", "last_error", "stats", "_window", "account_state",
     )
 
     def __init__(
@@ -108,6 +158,7 @@ class ApiKey:
         max_concurrency: int = 4,
         weight: float = 1.0,
         tags: Sequence[str] = (),
+        account_state: AccountState | None = None,
     ) -> None:
         self.key = key
         self.account = account
@@ -123,6 +174,7 @@ class ApiKey:
         self.last_error = ""
         self.stats = KeyStats()
         self._window: deque[float] = deque()  # 最近 60s 内的发起时间
+        self.account_state = account_state
 
     # ------------------------------------------------------------ 内部工具
 
@@ -142,6 +194,8 @@ class ApiKey:
 
     def rpm_blocked_until(self, now: float) -> float:
         """本地 RPM 窗口何时才会腾出额度（0 表示当前就有额度）。"""
+        if self.account_state is not None:
+            return self.account_state.rpm_blocked_until(now)
         if not self.rpm_limit:
             return 0.0
         self._prune(now)
@@ -152,7 +206,10 @@ class ApiKey:
 
     def available_at(self, now: float) -> float:
         """最早可能恢复可用的时刻。"""
-        return max(self.cooldown_until, self.rpm_blocked_until(now))
+        at = max(self.cooldown_until, self.rpm_blocked_until(now))
+        if self.account_state is not None:
+            at = max(at, self.account_state.available_at(now))
+        return at
 
     def is_usable(self, now: float, exclude: frozenset[str] = frozenset()) -> bool:
         if self.key in exclude:
@@ -161,19 +218,29 @@ class ApiKey:
             return False
         if self.inflight >= self.max_concurrency:
             return False
+        if self.account_state is not None and not self.account_state.is_usable(now):
+            return False
         return self.available_at(now) <= now
 
     def to_dict(self, now: float) -> dict[str, object]:
         self._prune(now)
+        cooldown = max(0.0, self.cooldown_until - now)
+        if self.account_state is not None:
+            cooldown = max(cooldown, self.account_state.cooldown_until - now)
+            window_len = len(self.account_state._window)
+            rpm_limit = self.account_state.rpm_limit or self.rpm_limit
+        else:
+            window_len = len(self._window)
+            rpm_limit = self.rpm_limit
         return {
             "id": self.key_id,
             "account": self.account,
             "key": self.masked,
             "status": self.status.value,
-            "cooldown_remaining": round(max(0.0, self.cooldown_until - now), 1),
+            "cooldown_remaining": round(max(0.0, cooldown), 1),
             "inflight": self.inflight,
             "consecutive_failures": self.consecutive_failures,
-            "rpm_window": f"{len(self._window)}/{self.rpm_limit or '-'}",
+            "rpm_window": f"{window_len}/{rpm_limit or '-'}",
             "last_error": self.last_error,
             "stats": self.stats.to_dict(),
         }
@@ -195,8 +262,18 @@ class KeyPool:
         self.strategy = strategy
         self._clock = clock
         self._rng = rng or random.Random()
+        self._accounts: dict[str, AccountState] = {}
         self._keys: list[ApiKey] = []
         for account in accounts:
+            acct_state = self._accounts.get(account.name)
+            if acct_state is None:
+                acct_state = AccountState(
+                    account.name,
+                    rpm_limit=account.rpm_limit,
+                    max_concurrency=account.max_concurrency,
+                    weight=account.weight,
+                )
+                self._accounts[account.name] = acct_state
             for raw in account.api_keys:
                 self._keys.append(
                     ApiKey(
@@ -206,6 +283,7 @@ class KeyPool:
                         max_concurrency=account.max_concurrency,
                         weight=account.weight,
                         tags=account.tags,
+                        account_state=acct_state,
                     )
                 )
         if not self._keys:
@@ -263,13 +341,24 @@ class KeyPool:
         with self._cond:
             if any(item.key == key for item in self._keys):
                 raise ConfigError("该 Key 已在池中，无需重复添加")
+            acct_name = account or "default"
+            acct_state = self._accounts.get(acct_name)
+            if acct_state is None:
+                acct_state = AccountState(
+                    acct_name,
+                    rpm_limit=rpm_limit,
+                    max_concurrency=max_concurrency,
+                    weight=weight,
+                )
+                self._accounts[acct_name] = acct_state
             item = ApiKey(
                 key,
-                account or "default",
+                acct_name,
                 rpm_limit=rpm_limit,
                 max_concurrency=max_concurrency,
                 weight=weight,
                 tags=tags,
+                account_state=acct_state,
             )
             self._keys.append(item)
             self._cond.notify_all()
@@ -289,6 +378,8 @@ class KeyPool:
                     del self._keys[index]
                     if self._cursor >= len(self._keys):
                         self._cursor = 0
+                    if item.account_state and not any(k.account_state is item.account_state for k in self._keys):
+                        self._accounts.pop(item.account_state.name, None)
                     self._cond.notify_all()
                     return item
         return None
@@ -363,6 +454,8 @@ class KeyPool:
         with self._cond:
             if key.inflight > 0:
                 key.inflight -= 1
+            if key.account_state is not None and key.account_state.inflight > 0:
+                key.account_state.inflight -= 1
             self._cond.notify_all()
 
     def _reserve(self, key: ApiKey, now: float) -> ApiKey:
@@ -370,6 +463,9 @@ class KeyPool:
         key.last_used = now
         key._window.append(now)
         key.stats.requests += 1
+        if key.account_state is not None:
+            key.account_state.inflight += 1
+            key.account_state._window.append(now)
         return key
 
     # ------------------------------------------------------------ 选择策略
@@ -427,7 +523,12 @@ class KeyPool:
     # ------------------------------------------------------------ 状态刷新
 
     def _refresh(self, now: float) -> None:
-        """把冷却到期的 Key 复活（调用方需持锁）。"""
+        """把冷却到期的 Key 和账号复活（调用方需持锁）。"""
+        for acct in self._accounts.values():
+            if acct.cooldown_until and acct.cooldown_until <= now:
+                acct.cooldown_until = 0.0
+                acct.consecutive_failures = 0
+                acct.last_error = ""
         for key in self._keys:
             if key.cooldown_until and key.cooldown_until <= now:
                 key.cooldown_until = 0.0
@@ -446,6 +547,10 @@ class KeyPool:
             key.cooldown_until = 0.0
             key.status = KeyStatus.HEALTHY
             key.last_error = ""
+            if key.account_state is not None:
+                key.account_state.consecutive_failures = 0
+                key.account_state.cooldown_until = 0.0
+                key.account_state.last_error = ""
             self._cond.notify_all()
 
     def report_rate_limit(self, key: ApiKey, retry_after: float | None = None) -> float:
@@ -460,6 +565,18 @@ class KeyPool:
             key.status = KeyStatus.COOLDOWN
             key.cooldown_until = self._clock() + delay
             key.last_error = f"429 rate limited (#{key.consecutive_failures})"
+
+            # 同步冷却同一账号下的所有 Key，防止连环送死！
+            if key.account_state is not None:
+                key.account_state.consecutive_failures += 1
+                key.account_state.cooldown_until = max(key.account_state.cooldown_until, self._clock() + delay)
+                key.account_state.last_error = key.last_error
+                for sibling in self._keys:
+                    if sibling.account_state is key.account_state and sibling.status is not KeyStatus.INVALID:
+                        sibling.status = KeyStatus.COOLDOWN
+                        sibling.cooldown_until = max(sibling.cooldown_until, key.account_state.cooldown_until)
+                        sibling.last_error = key.last_error
+
             self._cond.notify_all()
             return delay
 

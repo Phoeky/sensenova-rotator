@@ -21,7 +21,7 @@ from dataclasses import replace
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from .config import Config, RateControlConfig, STRATEGIES
+from .config import AccountConfig, Config, RateControlConfig, STRATEGIES
 from .errors import (
     AllKeysInvalid,
     ApiError,
@@ -225,9 +225,11 @@ class StRotator:
     ) -> RateLimiter | AdaptiveRateLimiter:
         """按 rate_control.mode 选择限速器。"""
         rc = config.rate_control
+        burst = max(1.0, float(len(config.accounts) if config.accounts else 1))
         if rc.mode == "adaptive":
             return AdaptiveRateLimiter(
                 rc.qps,
+                burst=burst,
                 min_rate=rc.min_qps,
                 max_rate=rc.max_qps,
                 decrease=rc.decrease,
@@ -237,8 +239,8 @@ class StRotator:
                 sleeper=sleeper,
             )
         if rc.mode == "fixed":
-            return RateLimiter(rc.qps, clock=clock, sleeper=sleeper)
-        return RateLimiter(0.0, clock=clock, sleeper=sleeper)  # off
+            return RateLimiter(rc.qps, burst=burst, clock=clock, sleeper=sleeper)
+        return RateLimiter(0.0, burst=burst, clock=clock, sleeper=sleeper)  # off
 
     def close(self) -> None:
         if self._owns_client:
@@ -258,11 +260,12 @@ class StRotator:
         *,
         model: str | None = None,
         attempts: int | None = None,
+        headers: Mapping[str, str] | None = None,
         **params: Any,
     ) -> dict[str, Any]:
         """非流式对话补全，自动轮换 Key 直到成功。"""
         payload = self._build_payload(messages, model, params)
-        return self._post_with_rotation("chat/completions", payload, attempts=attempts)
+        return self._post_with_rotation("chat/completions", payload, attempts=attempts, headers=headers)
 
     def chat_stream(
         self,
@@ -270,12 +273,13 @@ class StRotator:
         *,
         model: str | None = None,
         attempts: int | None = None,
+        headers: Mapping[str, str] | None = None,
         **params: Any,
     ) -> Iterator[str]:
         """流式对话补全，逐段 yield 文本增量（适合直接打印给人看）。"""
         payload = self._build_payload(messages, model, params)
         payload["stream"] = True
-        yield from self._stream_with_rotation("chat/completions", payload, attempts=attempts)
+        yield from self._stream_with_rotation("chat/completions", payload, attempts=attempts, headers=headers)
 
     def chat_stream_raw(
         self,
@@ -283,6 +287,7 @@ class StRotator:
         *,
         model: str | None = None,
         attempts: int | None = None,
+        headers: Mapping[str, str] | None = None,
         **params: Any,
     ) -> Iterator[dict[str, Any]]:
         """流式对话补全，逐块透传**原始 chunk**。
@@ -293,7 +298,7 @@ class StRotator:
         """
         payload = self._build_payload(messages, model, params)
         payload["stream"] = True
-        yield from self._stream_with_rotation("chat/completions", payload, attempts=attempts, raw=True)
+        yield from self._stream_with_rotation("chat/completions", payload, attempts=attempts, raw=True, headers=headers)
 
     def embeddings(
         self, inputs: Any, *, model: str, attempts: int | None = None, **params: Any
@@ -308,10 +313,11 @@ class StRotator:
         method: str = "POST",
         json_body: Mapping[str, Any] | None = None,
         attempts: int | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """通用轮换请求，方便接未封装的端点。"""
         return self._post_with_rotation(
-            path, dict(json_body) if json_body is not None else None, attempts=attempts, method=method
+            path, dict(json_body) if json_body is not None else None, attempts=attempts, method=method, headers=headers
         )
 
     def models(self) -> dict[str, Any]:
@@ -405,17 +411,46 @@ class StRotator:
         weight: float = 1.0,
     ) -> ApiKey:
         """运行中加一把 Key，立刻参与轮换。"""
-        return self.pool.add_key(
+        acct_name = account or f"账号{len(self.config.accounts) + 1}"
+        item = self.pool.add_key(
             key,
-            account or f"账号{len(self.config.accounts) + 1}",
+            acct_name,
             rpm_limit=rpm_limit,
             max_concurrency=max_concurrency,
             weight=weight,
         )
+        # 同步更新 self.config.accounts，避免配置状态脱节
+        found = False
+        for acct_cfg in self.config.accounts:
+            if acct_cfg.name == acct_name:
+                if key not in acct_cfg.api_keys:
+                    acct_cfg.api_keys.append(key)
+                found = True
+                break
+        if not found:
+            self.config.accounts.append(
+                AccountConfig(
+                    name=acct_name,
+                    api_keys=[key],
+                    rpm_limit=rpm_limit,
+                    max_concurrency=max_concurrency,
+                    weight=weight,
+                )
+            )
+        return item
 
     def remove_key(self, key: str) -> bool:
         """运行中移除一把 Key；返回是否真的移除了。"""
-        return self.pool.remove_key(key) is not None
+        removed = self.pool.remove_key(key)
+        if removed is not None:
+            # 同步更新 self.config.accounts
+            for acct_cfg in list(self.config.accounts):
+                if removed.key in acct_cfg.api_keys:
+                    acct_cfg.api_keys.remove(removed.key)
+                if not acct_cfg.api_keys:
+                    self.config.accounts.remove(acct_cfg)
+            return True
+        return False
 
     def set_default_model(self, model: str) -> str:
         """切换默认模型。下一次请求即生效（``_build_payload`` 每次现读配置）。"""
@@ -581,6 +616,7 @@ class StRotator:
         *,
         attempts: int | None = None,
         method: str = "POST",
+        headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         max_attempts = attempts or self.config.max_attempts
         excluded: set[str] = set()
@@ -596,25 +632,38 @@ class StRotator:
                 last_exc = last_exc or TimeoutError(f"超出单请求等待预算 {budget:g}s")
                 self._log(f"[放弃] 超出等待预算 {budget:g}s")
                 break
+
+            # 先过限速闸门（不持 Key 状态，避免排队休眠时霸占并发配额与锁死）
+            try:
+                self.limiter.acquire(timeout=remaining)
+            except TimeoutError as exc:
+                last_exc = exc
+                self._log(f"[放弃] 限速等待超时: {exc}")
+                break
+
+            remaining = self._remaining(started_at, budget)
             try:
                 key = self.pool.acquire(
                     exclude=excluded,
                     timeout=self._acquire_timeout(remaining),
                 )
             except AllKeysInvalid:
+                self.limiter.refund()
                 raise
             except NoAvailableKey as exc:
+                self.limiter.refund()
                 last_exc = exc
                 self._log(f"[放弃] 等待可用 Key 超时: {exc}")
                 break
 
             retryable = False
             try:
-                self.limiter.acquire()
                 started = self._clock()
                 self._note_upstream_attempt()
+                req_headers = dict(headers) if headers else {}
+                req_headers.update(self._auth(key))
                 response = self._client.request(
-                    method, path, json_body=payload, headers=self._auth(key)
+                    method, path, json_body=payload, headers=req_headers
                 )
                 body = safe_text(response) if response.status >= 400 else ""
                 action, retry_after = classify(response, body)
@@ -669,6 +718,7 @@ class StRotator:
         *,
         attempts: int | None = None,
         raw: bool = False,
+        headers: Mapping[str, str] | None = None,
     ) -> Iterator[Any]:
         max_attempts = attempts or self.config.max_attempts
         excluded: set[str] = set()
@@ -683,24 +733,37 @@ class StRotator:
             if remaining is not None and remaining <= 0:
                 last_exc = last_exc or TimeoutError(f"超出单请求等待预算 {budget:g}s")
                 break
+
+            # 先过限速闸门（不持 Key 状态，避免排队休眠时霸占并发配额与锁死）
+            try:
+                self.limiter.acquire(timeout=remaining)
+            except TimeoutError as exc:
+                last_exc = exc
+                self._log(f"[放弃] 限速等待超时: {exc}")
+                break
+
+            remaining = self._remaining(started_at, budget)
             try:
                 key = self.pool.acquire(
                     exclude=excluded,
                     timeout=self._acquire_timeout(remaining),
                 )
             except AllKeysInvalid:
+                self.limiter.refund()
                 raise
             except NoAvailableKey as exc:
+                self.limiter.refund()
                 last_exc = exc
                 break
 
             retryable = False
             try:
-                self.limiter.acquire()
                 started = self._clock()
                 self._note_upstream_attempt()
+                req_headers = dict(headers) if headers else {}
+                req_headers.update(self._auth(key))
                 response = self._client.request(
-                    "POST", path, json_body=payload, headers=self._auth(key), stream=True
+                    "POST", path, json_body=payload, headers=req_headers, stream=True
                 )
                 body = safe_text(response) if response.status >= 400 else ""
                 action, retry_after = classify(response, body)

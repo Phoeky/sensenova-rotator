@@ -335,7 +335,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 "use strict";
 
 var S = {
-  token: localStorage.getItem("sn_rotator_token") || "",
+  token: localStorage.getItem("st_rotator_token") || localStorage.getItem("sn_rotator_token") || "",
   cursor: 0,
   autoscroll: true,
   tab: "python",
@@ -351,7 +351,7 @@ var S = {
   if (!match) return;
   try {
     S.token = decodeURIComponent(match[1]);
-    localStorage.setItem("sn_rotator_token", S.token);
+    localStorage.setItem("st_rotator_token", S.token);
   } catch (err) { /* 非法编码，忽略 */ }
   history.replaceState(null, "", location.pathname + location.search);
 })();
@@ -845,7 +845,7 @@ function bind() {
   };
   $("btn-token").onclick = async function () {
     S.token = $("token-input").value.trim();
-    localStorage.setItem("sn_rotator_token", S.token);
+    localStorage.setItem("st_rotator_token", S.token);
     await refreshState();
   };
   $("token-input").addEventListener("keydown", function (event) {

@@ -333,16 +333,15 @@ class ConfigStore:
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> "ConfigStore":
         p = Path(path)
-        raw: dict[str, Any] = {}
-        if p.is_file():
-            try:
-                loaded = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                raise ConfigError(f"配置文件不是合法 JSON: {exc}") from exc
-            if not isinstance(loaded, dict):
-                raise ConfigError("配置文件根节点必须是对象")
-            raw = loaded
-        return cls(p, raw, Config.from_dict(raw))
+        if not p.is_file():
+            raise ConfigError(f"配置文件不存在: {p}")
+        try:
+            loaded = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"配置文件不是合法 JSON: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise ConfigError("配置文件根节点必须是对象")
+        return cls(p, loaded, Config.from_dict(loaded))
 
     def save(self) -> None:
         """原子落盘（先写临时文件再替换，避免写坏原文件）。"""
@@ -401,7 +400,7 @@ class ConfigStore:
         entry = {
             "name": name,
             "api_keys": [key],
-            "rpm_limit": rpm_limit if rpm_limit is not None else 30,
+            "rpm_limit": rpm_limit,
             "max_concurrency": max_concurrency,
             "weight": weight,
         }
